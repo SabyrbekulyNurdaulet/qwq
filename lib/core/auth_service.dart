@@ -117,6 +117,43 @@ class AuthService {
         email: email,
         password: password,
       );
+      
+      // НОВАЯ ЛОГИКА: Проверяем статус пользователя после входа
+      final firebaseUser = credential.user;
+      if (firebaseUser != null) {
+        final userData = await _getUserData(firebaseUser.uid);
+        
+        if (userData == null) {
+          // Пользователь не найден в Firestore
+          await signOut();
+          throw Exception('Данные пользователя не найдены. Обратитесь к администратору.');
+        }
+        
+        if (userData.status == 'pending_approval') {
+          // Аккаунт ожидает подтверждения
+          await signOut();
+          throw Exception('Ваш аккаунт ожидает подтверждения администратором.');
+        }
+        
+        if (userData.status == 'rejected') {
+          // Аккаунт отклонен
+          await signOut();
+          throw Exception('Ваш аккаунт был отклонен администратором.');
+        }
+        
+        if (userData.status == 'blocked') {
+          // Аккаунт заблокирован
+          await signOut();
+          throw Exception('Ваш аккаунт заблокирован.');
+        }
+        
+        if (userData.status != 'approved') {
+          // Неизвестный статус
+          await signOut();
+          throw Exception('Статус вашего аккаунта не позволяет войти в систему.');
+        }
+      }
+      
       debugPrint('[AuthService] Вход успешен для: ${credential.user?.uid}');
       return credential;
     } on FirebaseAuthException catch (e) {
@@ -124,12 +161,37 @@ class AuthService {
       debugPrint(
         '[AuthService] ОШИБКА FirebaseAuth при входе: ${e.code} - ${e.message}',
       );
-      // Здесь можно выбросить кастомное исключение или вернуть код ошибки
-      // для отображения в UI
-      return null; // Возвращаем null при ошибке
+      
+      // Преобразуем коды ошибок Firebase в понятные сообщения
+      String errorMessage;
+      switch (e.code) {
+        case 'user-not-found':
+          errorMessage = 'Пользователь с таким email не найден.';
+          break;
+        case 'wrong-password':
+          errorMessage = 'Неверный пароль.';
+          break;
+        case 'invalid-email':
+          errorMessage = 'Некорректный формат email.';
+          break;
+        case 'user-disabled':
+          errorMessage = 'Аккаунт отключен.';
+          break;
+        case 'too-many-requests':
+          errorMessage = 'Слишком много попыток входа. Попробуйте позже.';
+          break;
+        default:
+          errorMessage = 'Ошибка входа: ${e.message}';
+      }
+      
+      throw Exception(errorMessage);
     } catch (e) {
       debugPrint('[AuthService] НЕИЗВЕСТНАЯ ОШИБКА при входе: $e');
-      return null;
+      // Если это уже наше кастомное исключение, пробрасываем его дальше
+      if (e is Exception) {
+        rethrow;
+      }
+      throw Exception('Произошла неизвестная ошибка при входе.');
     }
   }
 

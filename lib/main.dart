@@ -2,9 +2,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'firebase_options.dart';
 import 'routes/app_router.dart';
 import 'core/providers/theme_provider.dart'; // Наш провайдер темы
+import 'services/push_notification_service.dart'; // Сервис push-уведомлений
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -17,6 +19,13 @@ const _inputBorderRadiusValue = 8.0; // Радиус для полей ввод�
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  
+  // Регистрируем обработчик фоновых сообщений
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  
+  // Инициализируем push-уведомления
+  await PushNotificationService.initialize();
+  
   // Инициализируем форматирование дат для русского языка
   await initializeDateFormatting('ru_RU', null);
 
