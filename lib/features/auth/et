@@ -1,0 +1,243 @@
+// lib/features/student/home_screen.dart
+import 'dart:async'; // Для Timer/Duration
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // Для получения пользователя
+import 'package:flutter_secure_storage/flutter_secure_storage.dart'; // Для проверки флагов
+// import 'package:go_router/go_router.dart'; // Если будешь использовать навигацию GoRouter напрямую
+
+// --- ДОБАВЬ ЭТИ ИМПОРТЫ ---
+import 'package:flutter/services.dart'; // Для WidgetsBindingObserver
+import '../auth/lock_screen.dart'; // Экран блокировки
+import '../../routes/app_router.dart'; // Для AppRouter.push (если он используется для модального окна)
+// -------------------------
+
+// Импорты страниц разделов
+import 'profile_page.dart';
+import 'schedule_page.dart';
+import 'grades_page.dart';
+import 'performance_page.dart';
+
+// --- KeepAliveWrapper (остается без изменений) ---
+class KeepAliveWrapper extends StatefulWidget { /* ... */ }
+class _KeepAliveWrapperState extends State<KeepAliveWrapper> with AutomaticKeepAliveClientMixin { /* ... */ }
+// ---------------------------------------------
+
+// --- StudentHomeScreen ---
+// Добавляем 'with WidgetsBindingObserver'
+class StudentHomeScreen extends ConsumerStatefulWidget {
+  const StudentHomeScreen({super.key});
+  @override
+  ConsumerState<StudentHomeScreen> createState() => _StudentHomeScreenState();
+}
+
+// Добавляем 'with WidgetsBindingObserver'
+class _StudentHomeScreenState extends ConsumerState<StudentHomeScreen> with WidgetsBindingObserver {
+  int _selectedIndex = 0;
+  late PageController _pageController;
+  // --- ДОБАВЛЯЕМ ПЕРЕМЕННЫЕ ДЛЯ БЛОКИРОВКИ ---
+  final _storage = const FlutterSecureStorage();
+  bool _isLockScreenVisible = false;
+  DateTime? _pausedTime;
+  final Duration _lockTimeout = const Duration(minutes: 1); // Таймаут блокировки (1 минута)
+  DateTime? _lastUnlockTime;
+  Timer? _lockTimer; // Таймер для блокировки ПОСЛЕ запуска, если не было активности
+  final Duration _inactiveLockTimeout = const Duration(minutes: 5); // Блокировка через 5 минут неактивности
+  // -----------------------------------------
+
+  // Список страниц (остается прежним)
+  final List<Widget> _pages = const [ /* ... */ ];
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(initialPage: _selectedIndex);
+    // --- ДОБАВЛЯЕМ ЛОГИКУ ИЗ СТАРОГО initState ---
+    WidgetsBinding.instance.addObserver(this); // Регистрируем наблюдатель
+    // Проверяем, нужно ли показать LockScreen сразу при запуске
+    // (если пользователь уже вошел и включен ПИН/Био)
+     WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkLockOnStart();
+        _resetInactiveTimer(); // Запускаем таймер неактивности
+     });
+    // Проверку и предложение настройки ПИН/Био можно оставить здесь или
+    // перенести в ProfilePage/SettingsPage для чистоты HomeScreen
+    // WidgetsBinding.instance.addPostFrameCallback((_) {
+    //   _checkAndPromptQuickLoginSetup();
+    // });
+     // ------------------------------------------
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    // --- НЕ ЗАБЫВАЕМ УДАЛИТЬ НАБЛЮДАТЕЛЬ И ТАЙМЕР ---
+    WidgetsBinding.instance.removeObserver(this);
+    _lockTimer?.cancel();
+    // --------------------------------------------
+    super.dispose();
+  }
+
+  // --- ДОБАВЛЯЕМ МЕТОДЫ ДЛЯ БЛОКИРОВКИ (адаптированы из старого home_screen.dart) ---
+
+   // Сброс и запуск таймера неактивности
+   void _resetInactiveTimer() {
+      _lockTimer?.cancel(); // Отменяем старый таймер
+      _lockTimer = Timer(_inactiveLockTimeout, () {
+         print("Inactive timeout reached. Showing lock screen.");
+         _showLockScreen(); // Показываем экран блокировки по таймеру неактивности
+      });
+   }
+
+   // Обработчик событий для сброса таймера при взаимодействии пользователя
+   void _handleUserInteraction([_]) {
+      // print("User interaction detected. Resetting inactive timer.");
+      _resetInactiveTimer();
+   }
+
+   // Проверка необходимости блокировки при запуске/возобновлении
+   Future<void> _checkLockOnStart() async {
+     // Показываем LockScreen сразу, если включен PIN/Bio
+     final userId = FirebaseAuth.instance.currentUser?.uid;
+     if (userId == null) return;
+     final pinEnabled = await _storage.read(key: 'pin_enabled_$userId') == 'true';
+     final bioEnabled = await _storage.read(key: 'bio_enabled_$_userId') == 'true';
+
+     if (pinEnabled || bioEnabled) {
+        print("PIN or Biometrics enabled. Showing lock screen on start/resume.");
+        _showLockScreen();
+     }
+   }
+
+  // Отслеживание состояния приложения
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive || state == AppLifecycleState.detached) {
+      // Приложение свернуто или неактивно
+      if (!_isLockScreenVisible) { // Запоминаем время только если не заблокировано
+         _pausedTime = DateTime.now();
+         _lockTimer?.cancel(); // Останавливаем таймер неактивности
+         print("App Paused at: $_pausedTime");
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      // Приложение возобновилось
+      final resumeTime = DateTime.now();
+      print("App Resumed at: $resumeTime");
+      _resetInactiveTimer(); // Перезапускаем таймер неактивности
+
+      // Защита от зацикливания после разблокировки
+      if (_lastUnlockTime != null && resumeTime.difference(_lastUnlockTime!) < const Duration(seconds: 2)) {
+        print("Ignoring resume event shortly after unlock.");
+        _pausedTime = null;
+        return;
+      }
+
+      bool requireLockDueToTimeout = false;
+      if (_pausedTime != null) {
+        final durationInBackground = resumeTime.difference(_pausedTime!);
+        if (durationInBackground >= _lockTimeout) {
+          requireLockDueToTimeout = true;
+          print("Lock timeout exceeded (${durationInBackground.inSeconds}s >= ${_lockTimeout.inSeconds}s). Lock screen required.");
+        }
+         _pausedTime = null; // Сбрасываем время паузы
+      } else {
+          print("App Resumed (no pause time recorded). No timeout lock needed.");
+          // Если нужно блокировать КАЖДЫЙ раз при возобновлении, а не по таймауту,
+          // то вызываем _checkLockOnStart() здесь БЕЗ условия requireLockDueToTimeout
+          // _checkLockOnStart();
+      }
+
+      // Показываем LockScreen по ТАЙМ-АУТУ
+      if (requireLockDueToTimeout) {
+        _showLockScreen();
+      }
+    }
+  }
+
+  // Показ экрана блокировки
+  Future<void> _showLockScreen() async {
+    // Предотвращаем повторный показ
+    if (_isLockScreenVisible || FirebaseAuth.instance.currentUser == null || !mounted) return;
+
+    final userId = FirebaseAuth.instance.currentUser!.uid;
+    final pinEnabled = await _storage.read(key: 'pin_enabled_$userId') == 'true';
+    final bioEnabled = await _storage.read(key: 'bio_enabled_$userId') == 'true';
+
+    // Показываем, только если ПИН или Биометрия включены
+    if ((pinEnabled || bioEnabled) && mounted) {
+      print("Showing lock screen modally...");
+      setState(() => _isLockScreenVisible = true); // Ставим флаг
+
+       // Показываем LockScreen как модальный диалог поверх всего
+       // Используем push для возможности вернуться (хотя LockScreen сам себя закроет)
+      bool? unlocked = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (context) => const LockScreen(),
+          fullscreenDialog: true, // Открывает как полное модальное окно
+        ),
+      );
+      // Альтернатива через GoRouter (если роут /lock определен):
+      // bool? unlocked = await context.push<bool>('/lock');
+
+      print("Lock screen result: $unlocked");
+
+      // Обработка результата
+      if (unlocked == true) {
+        _lastUnlockTime = DateTime.now(); // Запоминаем время успешной разблокировки
+        _resetInactiveTimer(); // Перезапускаем таймер неактивности
+        print("Screen unlocked successfully.");
+      } else {
+        // Пользователь нажал "Выйти" на LockScreen ИЛИ закрыл его иначе (маловероятно)
+        // Мы уже вышли из системы внутри LockScreen -> _logout()
+        print("User did not unlock or logged out from LockScreen.");
+        // AuthWrapper/GoRouter должны перенаправить на /login
+      }
+
+       // Сбрасываем флаг в любом случае ПОСЛЕ закрытия экрана
+       if (mounted) {
+         setState(() => _isLockScreenVisible = false);
+       }
+    } else {
+       print("Lock screen skipped (PIN/Bio disabled).");
+        _resetInactiveTimer(); // Все равно перезапустим таймер на случай, если настройки изменились
+    }
+  }
+  // ----------------------------------------------------
+
+  // Методы навигации (_onItemTapped, _onPageChanged) остаются без изменений
+  void _onItemTapped(int index) { /* ... */ }
+  void _onPageChanged(int index) { /* ... */ }
+
+  @override
+  Widget build(BuildContext context) {
+    // Оборачиваем PageView в Listener для отслеживания касаний
+    // и GestureDetector для других взаимодействий, чтобы сбрасывать таймер неактивности
+    return Listener(
+       onPointerDown: _handleUserInteraction, // Срабатывает при касании
+       child: GestureDetector(
+          // Срабатывает на другие взаимодействия (скролл, тап и т.д.)
+          // Это может быть избыточно, если Listener достаточно
+          // onTap: () => _handleUserInteraction(null),
+          // onPanDown: _handleUserInteraction,
+          // onScaleStart: _handleUserInteraction,
+
+          child: Scaffold(
+            body: PageView( // PageView остается как был
+              controller: _pageController,
+              onPageChanged: _onPageChanged,
+              children: _pages,
+            ),
+            bottomNavigationBar: BottomNavigationBar( // BottomNavigationBar остается как был
+              currentIndex: _selectedIndex,
+              onTap: (index){
+                 _onItemTapped(index);
+                 _resetInactiveTimer(); // Сбрасываем таймер при смене вкладки
+              },
+              items: const [ /* ... */ ],
+            ),
+          ),
+       ),
+    );
+  }
+} // Конец _HomeScreenState

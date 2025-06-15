@@ -1,0 +1,140 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Вспомогательные функции (без изменений)
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    function isTeacher() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+    
+    function isStudent() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student';
+    }
+
+    function isGroupCurator(groupId) {
+      return request.auth != null && 
+        get(/databases/$(database)/documents/groups/$(groupId)).data.curatorId == request.auth.uid;
+    }
+
+    function isGroupTeacher(groupId) {
+      let group = get(/databases/$(database)/documents/groups/$(groupId)).data;
+      return request.auth != null && 
+        group.subjects.hasAny([{'teacherId': request.auth.uid}]);
+    }
+
+    // Правила для коллекции schedules
+    match /schedules/{scheduleId} {
+      allow read: if isAuthenticated(); // Все аутентифицированные пользователи могут читать расписание
+      allow write: if isAdmin() || isTeacher(); // Только админы и учителя могут изменять расписание
+    }
+
+    // Правила для коллекции users
+    match /users/{userId} {
+      // Все аутентифицированные пользователи могут читать профили (можно ужесточить при необходимости)
+      allow read: if isAuthenticated();
+
+      // Разрешить новому пользователю создавать свой собственный документ
+      allow create: if request.auth != null && request.auth.uid == userId && // Пользователь создает документ для себя
+                       request.resource.data.uid == request.auth.uid && // uid в документе должен совпадать
+                       request.resource.data.email == request.auth.token.email && // email должен совпадать с email в Auth
+                       request.resource.data.role == 'pending_approval' && // Начальная роль
+                       request.resource.data.status == 'pending_approval' && // Начальный статус
+                       // Пользователь не может устанавливать эти поля при создании
+                       !("groupId" in request.resource.data) &&
+                       !("specialization" in request.resource.data) &&
+                       !("subjects" in request.resource.data) && // и другие поля, которые назначает администратор
+                       request.resource.data.keys().hasOnly(['uid', 'email', 'lastName', 'firstName', 'middleName', 'iin', 'phone', 'role', 'status', 'photoURL', 'createdAt', 'updatedAt']); // Явно перечисляем разрешенные поля при создании
+
+      // Разрешить обновление документа
+      allow update: if isAuthenticated() && (
+                      (isAdmin() || isTeacher()) || // Администраторы или учителя могут обновлять любые поля
+                      (request.auth.uid == userId && // Пользователь обновляет свой собственный профиль
+                       // Пользователь НЕ МОЖЕТ изменять эти поля
+                       request.resource.data.role == resource.data.role &&
+                       request.resource.data.status == resource.data.status &&
+                       request.resource.data.email == resource.data.email && // Email обычно не меняется пользователем
+                       request.resource.data.uid == resource.data.uid &&
+                       (request.resource.data.groupId == resource.data.groupId || !("groupId" in request.resource.data.keys())) &&
+                       (request.resource.data.specialization == resource.data.specialization || !("specialization" in request.resource.data.keys()))
+                       // Пользователь МОЖЕТ обновлять другие поля, такие как firstName, lastName, photoURL, phone и т.д.
+                      )
+                    );
+      allow delete: if isAdmin(); // Только администратор может удалять пользователей
+    }
+
+    // Правила для коллекции groups
+    match /groups/{groupId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+      
+      // Правила для подколлекции schedule
+      match /schedule/{scheduleId} {
+        allow read: if isAuthenticated();
+        allow write: if isAdmin() || isTeacher();
+      }
+    }
+
+    // Правила для коллекции subjects
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    // --- Оценки (grades) ---
+    match /grades/{gradeId} {
+      allow read: if isAuthenticated() && 
+        (isAdmin() || 
+         isTeacher() || 
+         (isStudent() && resource.data.studentId == request.auth.uid));
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    // --- Посещаемость (attendance) ---
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated() && 
+        (isAdmin() || 
+         isTeacher() || 
+         (isStudent() && resource.data.studentId == request.auth.uid));
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    // --- Задания (assignments) ---
+    match /assignments/{assignmentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    // --- Чаты (chats) и Сообщения (messages) ---
+    match /chats/{chatId} {
+      allow read, write: if isAuthenticated() && (isAdmin() || isTeacher() || request.auth.uid in resource.data.participantIds);
+    }
+
+    match /chats/{chatId}/messages/{messageId} {
+      allow read, write: if isAuthenticated() && 
+                           (isAdmin() || isTeacher() || request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds);
+    }
+
+    // --- Статистика (statistics) ---
+    match /statistics/{statDoc} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+    }
+    
+    // --- ОБЩЕЕ ПРАВИЛО ДЛЯ ПОЛНОГО ДОСТУПА УЧИТЕЛЕЙ ---
+    match /{document=**} {
+      allow read, write: if isAdmin() || isTeacher();
+    }
+  }
+} 

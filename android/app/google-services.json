@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "361946186456",
+    "project_id": "mycollegeapp-4f6ce",
+    "storage_bucket": "mycollegeapp-4f6ce.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:361946186456:android:2c59b3df23a3e801500dad",
+        "android_client_info": {
+          "package_name": "com.mycollege.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "361946186456-99bb8dc1ocu5qj5n0k6tsbuh6uccme36.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBHe6dxcy7FTFd3Rryjj-waHSmyIy24kAg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "361946186456-99bb8dc1ocu5qj5n0k6tsbuh6uccme36.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "361946186456-6oo26a6efl46i5vkhq5eo5kajf2v809o.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.mycollegeapp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
